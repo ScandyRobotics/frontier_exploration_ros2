@@ -380,6 +380,26 @@ TEST(FrontierSearchTests, TraversableInflationDoesNotDisconnectDispatchGoal)
   EXPECT_DOUBLE_EQ(goal->pose.position.y, 3.5);
 }
 
+TEST(FrontierSearchTests, StandoffGoalMustSeeFrontierAcrossKnownFreeCells)
+{
+  for (const int obstruction : {-1, 100}) {
+    auto core = make_snapshot_core();
+    core->params.frontier_goal_standoff_m = 2.0;
+    core->params.frontier_goal_search_radius_m = 3.0;
+    auto map_msg = build_grid(20, 20, 0);
+    set_cells(map_msg, {{9, 5}}, obstruction);
+    core->map = OccupancyGrid2d(map_msg);
+    core->costmap = OccupancyGrid2d(build_grid(20, 20, 0));
+
+    const auto goal = core->build_dispatch_goal_pose(
+      make_frontier(10.5, 5.5), make_pose(0.5, 5.5));
+
+    ASSERT_TRUE(goal.has_value());
+    EXPECT_DOUBLE_EQ(goal->pose.position.x, 10.5);
+    EXPECT_DOUBLE_EQ(goal->pose.position.y, 3.5);
+  }
+}
+
 TEST(FrontierSearchTests, LethalCostBarrierDisconnectsDispatchGoal)
 {
   auto core = make_snapshot_core();
