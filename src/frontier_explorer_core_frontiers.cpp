@@ -396,6 +396,20 @@ FrontierSnapshot FrontierExplorerCore::get_frontier_snapshot(
   FrontierSnapshot snapshot;
   // Convert low-level search output into policy-facing representation + cache key metadata.
   snapshot.frontiers = to_frontier_sequence(search_result.frontiers);
+  snapshot.frontiers.erase(
+    std::remove_if(
+      snapshot.frontiers.begin(), snapshot.frontiers.end(),
+      [this, &current_pose, min_goal_distance](const FrontierLike & frontier) {
+        return !build_dispatch_goal_pose(
+          frontier, current_pose, min_goal_distance <= 0.0).has_value();
+      }),
+    snapshot.frontiers.end());
+  if (snapshot.frontiers.size() < search_result.frontiers.size()) {
+    callbacks.log_info(
+      "Frontier view admission: " + std::to_string(snapshot.frontiers.size()) +
+      " of " + std::to_string(search_result.frontiers.size()) +
+      " candidates have a reachable, costmap-safe visible dispatch point");
+  }
   snapshot.signature = frontier_signature(snapshot.frontiers);
   snapshot.map_generation = map_generation;
   snapshot.decision_map_generation = decision_map_generation;
