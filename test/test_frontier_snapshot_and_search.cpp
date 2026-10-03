@@ -380,6 +380,26 @@ TEST(FrontierSearchTests, TraversableInflationDoesNotDisconnectDispatchGoal)
   EXPECT_DOUBLE_EQ(goal->pose.position.y, 3.5);
 }
 
+TEST(FrontierSearchTests, StandoffGoalMustSeeFrontierAcrossKnownFreeCells)
+{
+  for (const int obstruction : {-1, 100}) {
+    auto core = make_snapshot_core();
+    core->params.frontier_goal_standoff_m = 2.0;
+    core->params.frontier_goal_search_radius_m = 3.0;
+    auto map_msg = build_grid(20, 20, 0);
+    set_cells(map_msg, {{9, 5}}, obstruction);
+    core->map = OccupancyGrid2d(map_msg);
+    core->costmap = OccupancyGrid2d(build_grid(20, 20, 0));
+
+    const auto goal = core->build_dispatch_goal_pose(
+      make_frontier(10.5, 5.5), make_pose(0.5, 5.5));
+
+    ASSERT_TRUE(goal.has_value());
+    EXPECT_DOUBLE_EQ(goal->pose.position.x, 10.5);
+    EXPECT_DOUBLE_EQ(goal->pose.position.y, 3.5);
+  }
+}
+
 TEST(FrontierSearchTests, LethalCostBarrierDisconnectsDispatchGoal)
 {
   auto core = make_snapshot_core();
@@ -612,6 +632,47 @@ TEST(FrontierSearchTests, SupervisedCompletionKeepsWatchingForNewFrontiers)
   EXPECT_EQ(dispatch_calls, 1);
 }
 
+TEST(FrontierSearchTests, CompletionCountsAdmissibleViewsAndRechecksChangedCostmaps)
+{
+  auto core = make_snapshot_core();
+  core->params.return_to_start_on_complete = false;
+  core->params.completion_event_enabled = true;
+  core->params.frontier_goal_search_radius_m = 2.0;
+  auto blocked = build_grid(10, 10, 100);
+  set_cells(blocked, {{2, 2}}, 0);
+  core->costmap = OccupancyGrid2d(blocked);
+  int completion_calls = 0;
+  int dispatch_calls = 0;
+  core->callbacks.get_current_pose = []() {
+      return std::optional<geometry_msgs::msg::Pose>(make_pose(2.5, 2.5));
+    };
+  core->callbacks.on_exploration_complete = [&completion_calls]() {++completion_calls;};
+  core->callbacks.wait_for_action_server = [](double) {return true;};
+  core->callbacks.dispatch_goal_request = [&dispatch_calls](const GoalDispatchRequest &) {
+      ++dispatch_calls;
+    };
+  core->callbacks.frontier_search = [](
+    const geometry_msgs::msg::Pose &, const OccupancyGrid2d &, const OccupancyGrid2d &,
+    const std::optional<OccupancyGrid2d> &, double, bool)
+    {
+      FrontierSearchResult result;
+      result.frontiers = {dummy_frontier(8.5, 8.5)};
+      result.robot_map_cell = {2, 2};
+      return result;
+    };
+
+  core->try_send_next_goal();
+  core->try_send_next_goal();
+  EXPECT_EQ(completion_calls, 1);
+  EXPECT_EQ(dispatch_calls, 0);
+
+  core->costmap = OccupancyGrid2d(build_grid(10, 10, 0));
+  ++core->costmap_generation;
+  core->try_send_next_goal();
+  EXPECT_EQ(completion_calls, 1);
+  EXPECT_EQ(dispatch_calls, 1);
+}
+
 // Frontier snapshot cache behavior.
 TEST(FrontierSnapshotTests, SnapshotCacheHitsOnSameGenerationsAndRobotCell)
 {
@@ -729,8 +790,8 @@ TEST(FrontierSnapshotTests, DebugOutputsDoNotChangeSnapshotOrSelection)
     {
       FrontierSearchResult result;
       result.robot_map_cell = {3, 3};
-      result.frontiers.push_back(FrontierCandidate{{2.0, 2.0}, {2.0, 2.0}, 4});
-      result.frontiers.push_back(FrontierCandidate{{8.0, 8.0}, {8.0, 8.0}, 9});
+      result.frontiers.push_back(FrontierCandidate{{4.5, 3.5}, {4.5, 3.5}, 4});
+      result.frontiers.push_back(FrontierCandidate{{10.5, 10.5}, {10.5, 10.5}, 9});
       return result;
     };
   debug_core->callbacks.frontier_search = frontier_search;

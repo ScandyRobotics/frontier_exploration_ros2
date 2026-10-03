@@ -33,6 +33,45 @@ namespace frontier_exploration_ros2
 namespace
 {
 
+bool known_free_sightline(
+  const OccupancyGrid2d & map, int x, int y, int target_x, int target_y)
+{
+  const int dx = std::abs(target_x - x);
+  const int dy = std::abs(target_y - y);
+  const int step_x = target_x > x ? 1 : -1;
+  const int step_y = target_y > y ? 1 : -1;
+  int crossed_x = 0;
+  int crossed_y = 0;
+  const auto free = [&map](int col, int row) {
+      return map.getCost(col, row) ==
+             static_cast<int>(OccupancyGrid2d::CostValues::FreeSpace);
+    };
+  while (free(x, y)) {
+    if (x == target_x && y == target_y) {
+      return true;
+    }
+    const int64_t crossing =
+      static_cast<int64_t>(1 + 2 * crossed_x) * dy -
+      static_cast<int64_t>(1 + 2 * crossed_y) * dx;
+    if (crossing == 0) {
+      if (!free(x + step_x, y) || !free(x, y + step_y)) {
+        return false;
+      }
+      x += step_x;
+      y += step_y;
+      ++crossed_x;
+      ++crossed_y;
+    } else if (crossing < 0) {
+      x += step_x;
+      ++crossed_x;
+    } else {
+      y += step_y;
+      ++crossed_y;
+    }
+  }
+  return false;
+}
+
 std::vector<uint8_t> reachable_dispatch_cells(
   const OccupancyGrid2d & map,
   const OccupancyGrid2d & costmap,
@@ -357,6 +396,20 @@ FrontierSnapshot FrontierExplorerCore::get_frontier_snapshot(
   FrontierSnapshot snapshot;
   // Convert low-level search output into policy-facing representation + cache key metadata.
   snapshot.frontiers = to_frontier_sequence(search_result.frontiers);
+  snapshot.frontiers.erase(
+    std::remove_if(
+      snapshot.frontiers.begin(), snapshot.frontiers.end(),
+      [this, &current_pose, min_goal_distance](const FrontierLike & frontier) {
+        return !build_dispatch_goal_pose(
+          frontier, current_pose, min_goal_distance <= 0.0).has_value();
+      }),
+    snapshot.frontiers.end());
+  if (snapshot.frontiers.size() < search_result.frontiers.size()) {
+    callbacks.log_info(
+      "Frontier view admission: " + std::to_string(snapshot.frontiers.size()) +
+      " of " + std::to_string(search_result.frontiers.size()) +
+      " candidates have a reachable, costmap-safe visible dispatch point");
+  }
   snapshot.signature = frontier_signature(snapshot.frontiers);
   snapshot.map_generation = map_generation;
   snapshot.decision_map_generation = decision_map_generation;
@@ -616,7 +669,8 @@ std::optional<geometry_msgs::msg::PoseStamped> FrontierExplorerCore::build_dispa
 
   const auto is_dispatch_cell_eligible =
     [this, &current_pose, &target_point, target_clearance_m,
-    bypass_min_distance_dispatch, &reachable_cells, map_width](int map_x, int map_y) {
+    bypass_min_distance_dispatch, &reachable_cells, map_width,
+    target_map_x, target_map_y](int map_x, int map_y) {
       const std::size_t cell_index =
         static_cast<std::size_t>(map_y) * static_cast<std::size_t>(map_width) +
         static_cast<std::size_t>(map_x);
@@ -656,7 +710,7 @@ std::optional<geometry_msgs::msg::PoseStamped> FrontierExplorerCore::build_dispa
         return false;
       }
 
-      return true;
+      return known_free_sightline(*map, map_x, map_y, target_map_x, target_map_y);
     };
 
   if (is_dispatch_cell_eligible(target_map_x, target_map_y) && target_clearance_m <= 0.0) {
